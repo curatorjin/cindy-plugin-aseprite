@@ -79,7 +79,7 @@ cindy-plugin-aseprite/
   全量 `frame_{frame}.png` 得到 `frame_0` … `frame_18`，其中 `frame_6` 才是第 7 帧。
   **照着文件名猜帧号，会整体错一帧**
 - 本插件的策略：**工具入参一律 1 基**（`from` / `to` / `frame`），内部再换算成 CLI 的 0 基；
-  默认模板 `{title}-{frame1}.png` 用的是 1 基，所以导出文件名里的帧号与 Studio 里看到的一致。
+  默认模板 `{title}-{frame1}.png` 说的也是 1 基——全量导出时文件名里的帧号与 Studio 里看到的一致。
   想要 0 基文件名，得自己在 `name_template` 里显式写 `{frame}`（或 `{frame0}`）
 - 另一个坑：`{frame}` / `{frame0}` / `{frame1}` 的序号都是 **相对本次导出区间**的（2026-11-12 复测：
   `--frame-range 4,5 --save-as q-{frame}.png` → `q-0.png` / `q-1.png`），配 `--tag` 时相对标签。
