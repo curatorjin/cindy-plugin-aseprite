@@ -5,8 +5,8 @@
   "name": "Aseprite 工具箱",
   "description": "读取 Aseprite(.aseprite)文件的尺寸、帧、图层树、动画标签、切片、调色板结构，并导出 PNG 逐帧图、sprite sheet、逐层图。全部通过调用本机 aseprite.exe 命令行完成。",
   "whenToUse": "需要查看 .aseprite 文件的尺寸、帧数与时长、图层树、动画标签、切片/九宫格/轴心、调色板、tileset，或要把 Aseprite 源文件导出成 PNG 帧、sprite sheet、逐层图，或检查本机 Aseprite 命令行能否使用时找我。",
-  "version": "1.0.2",
-  "releaseNotes": "帧号事实整治：README 的 CLI 实测记录新增「帧号 0 基」一节（--frame-range 与 {frame}/{frame0} 是 0 基、{frame1} 是 1 基，附 --frame-range 7,7 --save-as f7.png 实为第 8 帧、frame_{frame}.png 得到 frame_0…frame_(N-1) 的踩坑案例）。ase_export_frames 返回值新增 frameMapping 数组（每项 { file, frame1, frame0 }）与配套 frameMappingNote 文字，配 --tag 导出时会用标签起始帧换算回 Studio 全局帧号；ase_preview 返回值新增 frame1/frame0 并点明预览按 1 基读取；ase_doctor 的 cli.frameNumbering 补充 --save-as 文件名的 0 基陷阱。工具入参仍一律 1 基，默认模板仍是 {frame1}。新增 resolveFrameRange 边界、frameMapping 生成逻辑的单测与真机 e2e 一致性断言（无 ASE_SAMPLE 时 SKIP）。",
+  "version": "1.0.3",
+  "releaseNotes": "ase_export_frames 新增布尔参数 name_from_global_frame（默认 false，与 Aseprite 原生命名一致）。开启后，导出完成的文件会用已有的 frameMapping（frame1 即 Studio 全局帧号）重命名：{frame1} → 全局帧号、{frame}/{frame0} → 全局帧号-1、{title} → 源文件 basename，{layer} 等其它占位符保留 Aseprite 展开的结果（从原文件名里拆出，拆不出就报 INVALID_ARGS 说明该模板不支持重命名）；目标名冲突一律走 uniqueTargetPath 加 -2/-3，绝不覆盖；子区间导出不再从 1 重新编号。frameMapping 每项新增 renamed 与 originalName，返回体新增 nameFromGlobalFrame；关闭时行为与返回体与 1.0.2 一致（仅多这两个字段）。ghost.json 参数说明、README 的帧号一节同步补充开关用法与样例，新增重命名纯函数单测与 false/true 对照的真机 e2e（无 ASE_SAMPLE 时 SKIP）。",
   "kind": "chip",
   "entry": "main.js",
   "command": "aseprite",
@@ -82,7 +82,7 @@
     },
     {
       "name": "ase_export_frames",
-      "description": "把 .aseprite 逐帧导出成 PNG 序列。落点规则：产出 ≥2 个文件时放进源文件目录下的 exports/，只出 1 个文件时放在源文件同目录（设置里可改成一律 exports/ 或一律同目录；单次可用 out_dir 指定别处）。支持按帧范围（1 起）或按动画标签筛选，文件名默认 <原名>-<帧号>.png 且帧号从 1 开始。返回里的 frameMapping 逐帧给出 { file, frame1, frame0 }：file 是实际落盘文件名，frame1 与 Studio 帧号一致（1 基），frame0 是 CLI 的 0 基编号（{frame}/{frame0} 用的是它）——不要拿文件名里的 0 基数字当 Studio 帧号。同名文件已存在时不会覆盖，会自动加 -2/-3 后缀并在结果里说明。会写入 PNG 文件；永不修改源文件。",
+      "description": "把 .aseprite 逐帧导出成 PNG 序列。落点规则：产出 ≥2 个文件时放进源文件目录下的 exports/，只出 1 个文件时放在源文件同目录（设置里可改成一律 exports/ 或一律同目录；单次可用 out_dir 指定别处）。支持按帧范围（1 起）或按动画标签筛选，文件名默认 <原名>-<帧号>.png 且帧号从 1 开始。返回里的 frameMapping 逐帧给出 { file, frame1, frame0, originalName, renamed }：file 是实际落盘文件名，frame1 与 Studio 帧号一致（1 基），frame0 是 CLI 的 0 基编号（{frame}/{frame0} 用的是它）——不要拿文件名里的 0 基数字当 Studio 帧号；originalName 是 Aseprite 原始产出名，renamed 表示最终文件名是否被改过。子区间或按标签导出时 Aseprite 会把帧号从 1 重新数（文件名里的数字不是全局帧号），需要可预测文件名就开 name_from_global_frame。同名文件已存在时不会覆盖，会自动加 -2/-3 后缀并在结果里说明。会写入 PNG 文件；永不修改源文件。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -117,6 +117,10 @@
           "name_template": {
             "type": "string",
             "description": "可选文件名模板，可用 {title}、{frame}（0 起）、{frame1}（1 起）。默认 {title}-{frame1}.png"
+          },
+          "name_from_global_frame": {
+            "type": "boolean",
+            "description": "可选，默认 false：默认跟随 Aseprite 原生命名，文件名里的帧号是「本次导出区间内」的序号（子区间导出会从 1 重新数）。开启后导出完成的文件会按 Studio 全局帧号重命名：模板里的 {frame1} → 全局帧号、{frame}/{frame0} → 全局帧号-1，{title} 用源文件 basename（去掉扩展名），{layer} 等其它占位符保留 Aseprite 展开的结果；例如导出第 5–7 帧得到 xxx-5.png / xxx-6.png / xxx-7.png。目标名已存在时自动加 -2/-3，绝不覆盖。子区间、按标签导出或需要可预测文件名时开它"
           },
           "out_dir": {
             "type": "string",

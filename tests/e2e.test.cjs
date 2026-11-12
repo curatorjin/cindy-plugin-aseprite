@@ -324,14 +324,107 @@ function register() {
       deepEqual(
         zero.frameMapping,
         [
-          { file: 'zero-0.png', frame1: 2, frame0: 1 },
-          { file: 'zero-1.png', frame1: 3, frame0: 2 },
+          { file: 'zero-0.png', frame1: 2, frame0: 1, originalName: 'zero-0.png', renamed: false },
+          { file: 'zero-1.png', frame1: 3, frame0: 2, originalName: 'zero-1.png', renamed: false },
         ],
         '{frame} 是 0 基：从第 2 帧起的文件叫 zero-0 / zero-1，但它们是第 2 / 3 帧'
       );
       assert(zero.frameMappingNote.includes('导出区间内'), 'note 要说明文件名是区间内序号：' + zero.frameMappingNote);
     }
     return to + ' 帧：' + res.frameMapping.map((m) => m.file + '=' + m.frame1).join('、');
+  });
+
+  test('ase_export_frames：name_from_global_frame 关/开 的文件名对照', async () => {
+    requireInfo();
+    if (ctx.frameCount < 2) throw skipped('样本只有 1 帧，测不了子区间导出');
+    const c = await client();
+    // 子区间：能取到第 2 帧往后的就从第 2 帧起（这样“区间内序号”与全局帧号必然不同）
+    const from = ctx.frameCount >= 3 ? 2 : 1;
+    const to = Math.min(from + 1, ctx.frameCount);
+    const frames = [];
+    for (let n = from; n <= to; n += 1) frames.push(n);
+    const title = w.spriteTitle(SAMPLE);
+
+    // 1) 默认（false）：文件名里的帧号从 1 重新数，就是 Aseprite 原生行为
+    const relDir = path.join(OUT_ROOT, 'frames-global-off');
+    const off = await c.callOk('ase/export_frames', {
+      asepritePath: aseprite,
+      source: SAMPLE,
+      outDir: relDir,
+      from,
+      to,
+      nameFromGlobalFrame: false,
+    });
+    equal(off.nameFromGlobalFrame, false, '默认必须是 false（跟随 Aseprite）');
+    equal(off.count, frames.length, '产物数');
+    equal(off.frameMapping.length, frames.length, 'frameMapping 条数');
+    const offNames = off.frameMapping.map((m) => m.file);
+    deepEqual(offNames, frames.map((_, i) => title + '-' + (i + 1) + '.png'), 'false 时文件名从 1 起（区间内序号）');
+    off.frameMapping.forEach((m, i) => {
+      equal(m.frame1, frames[i], 'frame1 仍是 Studio 全局帧号');
+      equal(m.frame0, frames[i] - 1, 'frame0 = frame1 - 1');
+      equal(m.originalName, m.file, 'false 时原始名 = 最终名');
+      equal(m.renamed, false, 'false 时不改名');
+      assert(fs.existsSync(path.join(relDir, m.file)), '文件应落盘：' + m.file);
+    });
+    assert(!off.frameMappingNote.includes('已按全局帧号重命名'), 'false 时不该声称重命名过：' + off.frameMappingNote);
+
+    // 2) 开启：文件名直接等于全局帧号
+    const onDir = path.join(OUT_ROOT, 'frames-global-on');
+    const on = await c.callOk('ase/export_frames', {
+      asepritePath: aseprite,
+      source: SAMPLE,
+      outDir: onDir,
+      from,
+      to,
+      nameFromGlobalFrame: true,
+    });
+    equal(on.nameFromGlobalFrame, true, '开关要如实回报');
+    equal(on.count, frames.length, '产物数应与关闭时一致');
+    deepEqual(
+      on.frameMapping.map((m) => m.file),
+      frames.map((n) => title + '-' + n + '.png'),
+      'true 时文件名等于全局帧号'
+    );
+    deepEqual(on.frameMapping.map((m) => m.frame1), frames, 'frameMapping 的 frame1 是全局帧号');
+    on.frameMapping.forEach((m, i) => {
+      equal(m.frame1, frames[i], 'frame1');
+      equal(m.frame0, frames[i] - 1, 'frame0');
+      equal(m.file, title + '-' + m.frame1 + '.png', '文件名里的数字就是 frame1');
+      assert(fs.existsSync(path.join(onDir, m.file)), '文件应落盘：' + m.file);
+      if (from > 1) {
+        equal(m.originalName, title + '-' + (i + 1) + '.png', 'originalName 是 Aseprite 原始产出名');
+        equal(m.renamed, true, '改名了就要如实标记');
+      }
+    });
+    assert(on.frameMappingNote.includes('已按全局帧号重命名'), 'note 要写清已按全局帧号重命名：' + on.frameMappingNote);
+    // 落盘清单与 frameMapping 完全一致（没有多余/遗留的改名中间文件）
+    deepEqual(fs.readdirSync(onDir).sort(), on.frameMapping.map((m) => m.file).sort(), '目录里只能是 frameMapping 里的文件');
+    equal(countTempDirs('cindy-aseprite-frames-'), 0, '暂存目录必须清理干净');
+    return (
+      '第 ' + from + '–' + to + ' 帧 → 关：' + off.frameMapping.map((m) => m.file).join('、') +
+      '；开：' + on.frameMapping.map((m) => m.file).join('、')
+    );
+  });
+
+  test('ase_export_frames：name_from_global_frame 配 {frame} 模板也按全局帧号', async () => {
+    requireInfo();
+    if (ctx.frameCount < 3) throw skipped('样本不足 3 帧，测不了子区间 + {frame} 模板');
+    const c = await client();
+    const outDir = path.join(OUT_ROOT, 'frames-global-zero');
+    const res = await c.callOk('ase/export_frames', {
+      asepritePath: aseprite,
+      source: SAMPLE,
+      outDir,
+      from: 2,
+      to: 3,
+      nameTemplate: 'z-{frame}.png',
+      nameFromGlobalFrame: true,
+    });
+    deepEqual(res.frameMapping.map((m) => m.file), ['z-1.png', 'z-2.png'], '{frame} 是全局帧号 - 1');
+    deepEqual(res.frameMapping.map((m) => m.frame1), [2, 3], 'frame1 仍是全局帧号');
+    deepEqual(res.frameMapping.map((m) => m.originalName), ['z-0.png', 'z-1.png'], 'originalName 记录 Aseprite 原名');
+    return res.frameMapping.map((m) => m.originalName + ' → ' + m.file).join('、');
   });
 
   test('ase_export_frames：全部帧', async () => {

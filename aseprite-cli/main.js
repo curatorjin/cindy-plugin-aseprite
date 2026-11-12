@@ -72,6 +72,7 @@ function configToWorkerParams(cfg, args) {
   if (args.to !== undefined) params.to = args.to;
   if (args.tag !== undefined) params.tag = args.tag;
   if (args.trim !== undefined) params.trim = asBool(args.trim, false);
+  if (args.name_from_global_frame !== undefined) params.nameFromGlobalFrame = asBool(args.name_from_global_frame, false);
   params.source = String(args.path || args.source || '').trim();
   return params;
 }
@@ -119,7 +120,10 @@ function frameMappingLines(result) {
   if (!map.length) return [];
   const shown = map.slice(0, 8);
   const lines = ['帧号 → 文件名（frame1 与 Studio 一致，frame0 是 CLI 0 基）：'];
-  for (const m of shown) lines.push('  第 ' + m.frame1 + ' 帧（0 基 ' + m.frame0 + '）→ ' + m.file);
+  for (const m of shown) {
+    const origin = m.renamed && m.originalName ? '（Aseprite 原名 ' + m.originalName + '）' : '';
+    lines.push('  第 ' + m.frame1 + ' 帧（0 基 ' + m.frame0 + '）→ ' + m.file + origin);
+  }
   if (map.length > shown.length) lines.push('  … 还有 ' + (map.length - shown.length) + ' 帧，完整对应见 result.frameMapping');
   return lines;
 }
@@ -301,12 +305,15 @@ async function runTool(toolName, msg) {
 
   if (toolName === 'ase_export_frames') {
     const result = await callWorker('ase/export_frames', params, msg.callId);
+    const globalNamed = result.nameFromGlobalFrame === true;
     const lines = [
       '逐帧导出完成：' + result.count + ' 个 PNG',
       '目录：' + result.outDir,
       dirModeText(result),
       result.tag ? '筛选：tag ' + result.tag : result.frameRange ? '帧范围：' + result.frameRange.from + '–' + result.frameRange.to : '帧范围：全部',
-      '文件名模板：' + (result.template || '{title}-{frame1}.png') + '（帧号对照见下，文件名里的数字不一定等于 Studio 帧号）。',
+      globalNamed
+        ? '文件名模板：' + (result.template || '{title}-{frame1}.png') + '（已按 Studio 全局帧号命名，文件名里的数字就是帧号）。'
+        : '文件名模板：' + (result.template || '{title}-{frame1}.png') + '（帧号对照见下，文件名里的数字不一定等于 Studio 帧号）。',
     ];
     const rnFrames = renamedText(result);
     if (rnFrames) lines.push(rnFrames);

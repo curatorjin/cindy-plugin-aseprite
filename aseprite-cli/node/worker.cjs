@@ -178,6 +178,21 @@ function frameRangeArg(range) {
   return String(range.from) + ',' + String(range.to);
 }
 
+/** JSON 参数里的布尔开关：缺省 false，认 true/false 与 1/0 之类的字符串 */
+function flagOn(value) {
+  if (value === undefined || value === null || value === '') return false;
+  if (typeof value === 'boolean') return value;
+  const s = String(value).trim().toLowerCase();
+  return s === '1' || s === 'true' || s === 'yes' || s === 'on';
+}
+
+/** 源文件 basename 去掉扩展名，就是 Aseprite 的 {title} */
+function spriteTitle(sourcePath) {
+  const base = path.basename(String(sourcePath == null ? '' : sourcePath));
+  const ext = path.extname(base);
+  return ext ? base.slice(0, base.length - ext.length) : base;
+}
+
 /**
  * 这一批导出的第一帧在 Studio 里的 1 基帧号。
  * 配了 --tag 时文件名里的帧号是标签内序号，得用标签的 fromFrame 换算回全局帧号；
@@ -427,6 +442,144 @@ function buildFrameMapping(names, template, startFrame1, scopeLabel) {
     note = span + '（模板占位符和文件名对不上，按产物顺序配对）。' + FRAME_PLACEHOLDER_BASE_NOTE;
   }
   return { frameMapping, note };
+}
+
+// --- 按全局帧号重命名（name_from_global_frame）----------------------------
+
+/** 把 name_template 拆成文本片段与占位符 token（保序） */
+function templateTokens(template) {
+  const src = String(template == null ? '' : template);
+  const tokens = [];
+  const re = /\{([A-Za-z0-9_]+)\}/g;
+  let last = 0;
+  let m;
+  while ((m = re.exec(src)) !== null) {
+    if (m.index > last) tokens.push({ text: src.slice(last, m.index) });
+    tokens.push({ name: m[1] });
+    last = m.index + m[0].length;
+  }
+  if (last < src.length) tokens.push({ text: src.slice(last) });
+  return tokens;
+}
+
+function isFramePlaceholder(name) {
+  return name === 'frame' || name === 'frame0' || name === 'frame1';
+}
+
+/**
+ * 按 Studio 全局帧号生成文件名（纯函数，不碰磁盘）。
+ *   template      name_template，必须带、且只带一个帧号占位符
+ *   frame1        该帧在 Studio 里的 1 基帧号（全局帧号，不是区间内序号）
+ *   originalName  Aseprite 实际产出的文件名，用于拆出 {layer} 等占位符的展开结果
+ *   title         源文件 basename（去扩展名）
+ *
+ * 规则：{frame1} → 全局帧号；{frame}/{frame0} → 全局帧号 - 1；{title} → title；
+ * 其它占位符（{layer} / {tag} / {duration} …）原样保留 Aseprite 展开的那段文字。
+ */
+function globalFrameFileName(template, frame1, originalName, title) {
+  const n = Number(frame1);
+  if (!Number.isInteger(n) || n < 1) {
+    throw toolError('INVALID_ARGS', '按全局帧号命名需要 1 基帧号，拿到的是 ' + String(frame1));
+  }
+  const tokens = templateTokens(template);
+  const frameTokens = tokens.filter((t) => t.name && isFramePlaceholder(t.name));
+  if (frameTokens.length === 0) {
+    throw toolError(
+      'INVALID_ARGS',
+      'name_from_global_frame 要求 name_template 里带帧号占位符（{frame1} / {frame} / {frame0}），当前模板：' + String(template)
+    );
+  }
+  if (frameTokens.length > 1) {
+    throw toolError(
+      'INVALID_ARGS',
+      'name_template 里有 ' + frameTokens.length + ' 个帧号占位符，Aseprite 只替换第一个，无法按全局帧号命名；请只保留一个'
+    );
+  }
+
+  const titleText = title === undefined || title === null ? null : String(title);
+  // groupNames[k] 是第 k+1 个捕获组对应的占位符名（{title} 已知时直接用字面量，不占捕获组）
+  const groupNames = [];
+  let pattern = '^';
+  for (const t of tokens) {
+    if (t.text !== undefined) {
+      pattern += escapeRegExp(t.text);
+    } else if (t.name === 'title' && titleText !== null) {
+      pattern += escapeRegExp(titleText);
+    } else if (t.name !== 'title' && isFramePlaceholder(t.name)) {
+      pattern += '(\\d+)';
+      groupNames.push(t.name);
+    } else {
+      pattern += '([\\s\\S]*?)';
+      groupNames.push(t.name);
+    }
+  }
+  pattern += '$';
+
+  const copyNames = groupNames.filter((nm) => !isFramePlaceholder(nm) && !(nm === 'title' && titleText !== null));
+  const extracted = Object.create(null);
+  if (copyNames.length) {
+    let m = null;
+    try {
+      m = new RegExp(pattern).exec(String(originalName == null ? '' : originalName));
+    } catch {
+      m = null;
+    }
+    if (!m) {
+      throw toolError(
+        'INVALID_ARGS',
+        '无法从原文件名 ' + String(originalName) + ' 里拆出 ' + copyNames.map((nm) => '{' + nm + '}').join('') +
+          ' 段，这个 name_template 不支持按全局帧号重命名（把占位符之间加上明确的分隔符，或去掉该占位符）'
+      );
+    }
+    groupNames.forEach((nm, i) => {
+      if (isFramePlaceholder(nm) || (nm === 'title' && titleText !== null)) return;
+      extracted[nm] = m[i + 1];
+    });
+    for (const nm of copyNames) {
+      if (!extracted[nm]) {
+        throw toolError(
+          'INVALID_ARGS',
+          '原文件名 ' + String(originalName) + ' 里的 {' + nm + '} 段是空的，无法按全局帧号重命名'
+        );
+      }
+    }
+  }
+
+  let out = '';
+  for (const t of tokens) {
+    if (t.text !== undefined) out += t.text;
+    else if (t.name === 'frame1') out += String(n);
+    else if (t.name === 'frame' || t.name === 'frame0') out += String(n - 1);
+    else if (t.name === 'title') out += titleText === null ? extracted.title : titleText;
+    else out += extracted[t.name];
+  }
+  return path.basename(out);
+}
+
+/**
+ * 在暂存目录里把这一批产物按全局帧号改名。
+ * 两段式改名（先改成临时名、再改成目标名）：否则「A 改成 B」的时候
+ * B 可能还是本批另一个还没改名的文件，会白白拿到 -2 后缀。
+ * 目标名已存在时一律走 uniqueTargetPath，绝不覆盖。
+ *
+ * items: [{ path, name, frame1 }]，name 是 Aseprite 原产文件名，顺序即帧序
+ * 返回 [{ from, to, path }]，顺序与 items 一致
+ */
+function renameFramesToGlobalName(dir, items, template, title) {
+  const stamp = Date.now();
+  const plan = items.map((it, i) => ({
+    item: it,
+    wanted: globalFrameFileName(template, it.frame1, it.name, title),
+    tmp: path.join(dir, '.ase-rename-' + i + '-' + stamp + path.extname(it.name)),
+  }));
+  for (const p of plan) moveFile(p.item.path, p.tmp);
+  const out = [];
+  for (const p of plan) {
+    const target = uniqueTargetPath(dir, p.wanted);
+    moveFile(p.tmp, target);
+    out.push({ from: p.item.name, to: path.basename(target), path: target });
+  }
+  return out;
 }
 
 // --- 参数拼装 -------------------------------------------------------------
@@ -1345,29 +1498,62 @@ async function methodExportFrames(params) {
         { args }
       );
     }
-    const placed = placeStagedFiles(staging, staged, src.path, p.outDir, mode);
-    // 帧号对照：先拿这批的第一帧在 Studio 里的 1 基帧号，再拿实际落盘文件名按帧序配对
+    // 帧号对照必须在改名前算：Aseprite 的原始文件名是唯一可靠的对照来源
     const startFrame1 = resolveFrameStart(tagName, spriteMeta.tags, range);
+    const scope = tagName ? '标签内' : '导出区间内';
     const sortedStaged = staged.slice().sort((a, b) => compareFileNames(a.name, b.name));
-    const mapping = buildFrameMapping(
-      sortedStaged.map((f) => path.basename(f.name)),
-      templateName,
-      startFrame1,
-      tagName ? '标签内' : '导出区间内'
-    );
-    const frameMapping = mapping.frameMapping.map((item, i) =>
-      placed.files[i] ? { file: placed.files[i].name, frame1: item.frame1, frame0: item.frame0 } : item
-    );
+    const originalNames = sortedStaged.map((f) => path.basename(f.name));
+    const wantGlobalName = flagOn(p.nameFromGlobalFrame);
+    let mapping = buildFrameMapping(originalNames, templateName, startFrame1, scope);
+    let frameMappingNote = mapping.note;
+    let batch = staged;
+
+    if (wantGlobalName) {
+      if (mapping.frameMapping.length !== originalNames.length) {
+        throw toolError(
+          'INVALID_ARGS',
+          '无法确定这批文件在 Studio 里的全局帧号，不能用 name_from_global_frame 命名。' +
+            '下一步：用带单个帧号占位符的 name_template，或用 from/to 明确指定导出区间后重试'
+        );
+      }
+      const firstFrame1 = mapping.frameMapping[0].frame1;
+      renameFramesToGlobalName(
+        staging,
+        sortedStaged.map((f, i) => ({ path: f.path, name: originalNames[i], frame1: mapping.frameMapping[i].frame1 })),
+        templateName,
+        spriteTitle(src.path)
+      );
+      batch = listFilesRecursive(staging).sort((a, b) => compareFileNames(a.name, b.name));
+      // 改完名再按真实文件名重算一遍，保证 frameMapping 与落盘名一致
+      mapping = buildFrameMapping(
+        batch.map((f) => path.basename(f.name)),
+        templateName,
+        firstFrame1,
+        scope
+      );
+      frameMappingNote =
+        '已按全局帧号重命名（name_from_global_frame=true）：文件名里的帧号就是 Studio 全局帧号，可直接当帧号用。' +
+        mapping.note;
+    }
+
+    const placed = placeStagedFiles(staging, batch, src.path, p.outDir, mode);
+    // frameMapping 顺序即帧序，与 originalNames / placed.files 一一对应
+    const frameMapping = mapping.frameMapping.map((item, i) => {
+      const file = placed.files[i] ? placed.files[i].name : item.file;
+      const originalName = originalNames[i] === undefined ? file : originalNames[i];
+      return { file, frame1: item.frame1, frame0: item.frame0, originalName, renamed: file !== originalName };
+    });
     return {
       outDir: placed.outDir,
       exportDirMode: placed.mode,
       files: placed.files,
       count: placed.files.length,
       renamed: placed.renamed,
+      nameFromGlobalFrame: wantGlobalName,
       frameRange: range.from === null ? null : { from: range.from + 1, to: range.to + 1 },
       tag: tagName,
       frameMapping,
-      frameMappingNote: mapping.note,
+      frameMappingNote,
       template: templateName,
       scale,
       aseprite: { path: ase.path },
@@ -1687,6 +1873,11 @@ module.exports = {
   buildFrameNameRegExp,
   frameNumberFromFileName,
   buildFrameMapping,
+  globalFrameFileName,
+  renameFramesToGlobalName,
+  templateTokens,
+  flagOn,
+  spriteTitle,
   compareFileNames,
   FRAME_NUMBERING_NOTE,
   FRAME_PLACEHOLDER_BASE_NOTE,

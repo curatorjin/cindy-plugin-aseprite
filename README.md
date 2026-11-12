@@ -84,9 +84,19 @@ cindy-plugin-aseprite/
 - 另一个坑：`{frame}` / `{frame0}` / `{frame1}` 的序号都是 **相对本次导出区间**的（2026-11-12 复测：
   `--frame-range 4,5 --save-as q-{frame}.png` → `q-0.png` / `q-1.png`），配 `--tag` 时相对标签。
   也就是说文件名里的数字**不是**全局帧号，只靠文件名永远还原不出来
-- `ase_export_frames` 返回里的 `frameMapping`（`[{ file, frame1, frame0 }]`，顺序即帧序）就是
-  文件名 ↔ 帧号 的唯一对照：`frame1` 与 Studio 一致，`frame0` 是 CLI 的 0 基编号。
-  配 `--tag` 导出时文件名里是标签内序号，`frameMapping` 已换算成全局帧号
+- `ase_export_frames` 返回里的 `frameMapping`（`[{ file, frame1, frame0, originalName, renamed }]`，顺序即帧序）就是
+  文件名 ↔ 帧号 的唯一对照：`frame1` 与 Studio 一致，`frame0` 是 CLI 的 0 基编号，`originalName` 是
+  Aseprite 原始产出名，`renamed` 表示最终文件名是否被改过。配 `--tag` 导出时文件名里是标签内序号，
+  `frameMapping` 已换算成全局帧号
+- **想直接拿文件名当帧号用：开 `name_from_global_frame`**（`ase_export_frames` 的布尔参数，默认 `false`）。
+  默认 `false` 时文件命名与 Aseprite 原生完全一致——名字里的帧号是「本次导出区间内」的序号，子区间导出
+  会从 1 重新数。开成 `true` 后，插件用上面那份 `frameMapping`（`frame1` 就是全局帧号）把每个产物重命名：
+  `{frame1}` → 全局帧号、`{frame}` / `{frame0}` → 全局帧号 - 1、`{title}` → 源文件 basename（去扩展名），
+  模板里的 `{layer}` 等其它占位符保留 Aseprite 展开的那段文字（从原文件名里拆出来，拆不出就报 `INVALID_ARGS`）。
+  例：`--frame-range 4,6`（第 5–7 帧）配默认模板，`false` 得到 `xxx-1.png` / `xxx-2.png` / `xxx-3.png`，
+  `true` 得到 `xxx-5.png` / `xxx-6.png` / `xxx-7.png`。目标名已存在时一律加 `-2`/`-3` 后缀，不会覆盖；
+  返回里每帧的 `renamed` / `originalName` 会写清改名前后的关系。什么时候该开：**子区间导出、按标签导出、
+  或下游要按文件名排序/索引帧**；全量导出时两种模式的名字本来就一样
 - 核对帧内容请用 `ase_preview`（1 基、直接读盘），**不要靠导出文件名反推帧号**
 
 **不存在 / 无效（踩过的坑）**
@@ -165,10 +175,12 @@ node tests/run.cjs
 ```
 
 - `tests/unit.test.cjs`：参数拼装、帧号换算（1 基 → 0 基边界）、`frameMapping` 生成逻辑、
+  按全局帧号重命名的纯函数（三种帧号占位符 / `{layer}` 拆分 / 冲突改名）、
   落点决策、错误识别、PNG 头解析、清单与代码一致性（不需要 aseprite，任何机器都能跑）
 - `tests/e2e.test.cjs`：真机冒烟，用 `ASE_SAMPLE` 指定的 `.aseprite` 跑通六个工具（断言值全部从样本结构
-  现算，不写死任何具体数字），含「`frameMapping` 与落盘文件名、帧号三者一致」的核对；并自建一个带分组/切片/
-  九宫格/轴心/tileset 的 fixture 验证结构 dump；样本文件和样本目录的 sha256 / 清单前后比对
+  现算，不写死任何具体数字），含「`frameMapping` 与落盘文件名、帧号三者一致」的核对，以及同一子区间
+  在 `name_from_global_frame` 关/开下的文件名对照；并自建一个带分组/切片/九宫格/轴心/tileset 的 fixture
+  验证结构 dump；样本文件和样本目录的 sha256 / 清单前后比对
 - 缺环境（找不到 exe 或没设 `ASE_SAMPLE`）时这些用例打印 `SKIP` 而不是 `FAIL`
 - 可用 `ASEPRITE_PATH` / `ASE_SAMPLE` 指定 exe 与样本；仓库里不带任何样本文件
 

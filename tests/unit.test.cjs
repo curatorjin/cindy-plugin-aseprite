@@ -159,6 +159,126 @@ function register() {
     deepEqual(sorted, ['frame_1.png', 'frame_2.png', 'frame_10.png']);
   });
 
+  // ---- 按全局帧号重命名（name_from_global_frame）-------------------------------
+  test('globalFrameFileName：{frame1} 直接给全局帧号', () => {
+    equal(w.globalFrameFileName('{title}-{frame1}.png', 5, 'hero-1.png', 'hero'), 'hero-5.png');
+    equal(w.globalFrameFileName('{frame1}.png', 12, 'x-1.png', 'x'), '12.png', '模板只有帧号也行');
+    equal(w.globalFrameFileName('{title}-{frame1}.png', 7, 'hero-3.png', 'hero'), 'hero-7.png', '区间内序号 3 → 全局 7');
+  });
+
+  test('globalFrameFileName：{frame} / {frame0} 给全局帧号 - 1', () => {
+    equal(w.globalFrameFileName('{title}-{frame}.png', 5, 'hero-0.png', 'hero'), 'hero-4.png', '{frame} 是 0 基');
+    equal(w.globalFrameFileName('{title}-{frame0}.png', 5, 'hero-0.png', 'hero'), 'hero-4.png', '{frame0} 也是 0 基');
+    equal(w.globalFrameFileName('{title}-{frame1}.png', 1, 'hero-1.png', 'hero'), 'hero-1.png', '第 1 帧 / {frame1}');
+    equal(w.globalFrameFileName('{title}-{frame}.png', 1, 'hero-0.png', 'hero'), 'hero-0.png', '第 1 帧 / {frame} → 0');
+  });
+
+  test('globalFrameFileName：{layer} 保留 Aseprite 拆出来的那一段', () => {
+    // 子区间：Aseprite 写 hero-bg-1.png（区间内序号），全局第 6 帧
+    equal(
+      w.globalFrameFileName('{title}-{layer}-{frame1}.png', 6, 'hero-bg-1.png', 'hero'),
+      'hero-bg-6.png',
+      'layer 段要原样保留'
+    );
+    equal(
+      w.globalFrameFileName('{title}_{layer}_{frame}.png', 6, 'hero_head-1_0.png', 'hero'),
+      'hero_head-1_5.png',
+      'layer 名里带数字也不能拆错'
+    );
+    const err = throws(
+      () => w.globalFrameFileName('{title}-{layer}-{frame1}.png', 6, 'unrelated.png', 'hero'),
+      'INVALID_ARGS',
+      '拆不出 layer'
+    );
+    assert(err.message.includes('{layer}'), '错误信息要点名拆不出的占位符：' + err.message);
+    assert(err.message.includes('不支持'), '要说明该模板不支持重命名：' + err.message);
+  });
+
+  test('globalFrameFileName：模板没有帧号占位符 / 多个帧号占位符都要报错', () => {
+    const noFrame = throws(() => w.globalFrameFileName('{title}-plain.png', 3, 'hero-1.png', 'hero'), 'INVALID_ARGS');
+    assert(noFrame.message.includes('帧号占位符'), '要说清缺帧号占位符：' + noFrame.message);
+    const many = throws(() => w.globalFrameFileName('{title}-{frame1}-{frame}.png', 3, 'hero-1-0.png', 'hero'), 'INVALID_ARGS');
+    assert(many.message.includes('只保留一个'), '多个帧号占位符要明确拒绝：' + many.message);
+    throws(() => w.globalFrameFileName('{title}-{frame1}.png', 0, 'hero-0.png', 'hero'), 'INVALID_ARGS', '帧号必须 1 基');
+    throws(() => w.globalFrameFileName('{title}-{frame1}.png', 2.5, 'hero-1.png', 'hero'), 'INVALID_ARGS', '帧号必须是整数');
+  });
+
+  test('globalFrameFileName：{title} 来自源文件名，未知 title 时从原文件名反推', () => {
+    equal(w.globalFrameFileName('{title}-{frame1}.png', 4, 'orig-1.png', 'orig'), 'orig-4.png');
+    equal(w.globalFrameFileName('{title}-{frame1}.png', 4, 'orig-1.png', null), 'orig-4.png', 'title 未知也能对上');
+    equal(w.globalFrameFileName('{frame1}-{title}.png', 4, '1-orig.png', 'orig'), '4-orig.png', '顺序无所谓');
+  });
+
+  test('renameFramesToGlobalName：暂存目录里按全局帧号改名，不留临时名', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ase-rename-'));
+    try {
+      const items = [1, 2, 3].map((i) => {
+        const p = path.join(dir, 'hero-' + i + '.png');
+        fs.writeFileSync(p, 'x' + i);
+        return { path: p, name: 'hero-' + i + '.png', frame1: i + 4 };
+      });
+      const out = w.renameFramesToGlobalName(dir, items, '{title}-{frame1}.png', 'hero');
+      deepEqual(
+        out.map((r) => r.to),
+        ['hero-5.png', 'hero-6.png', 'hero-7.png'],
+        '全局帧号 5/6/7'
+      );
+      deepEqual(out.map((r) => r.from), ['hero-1.png', 'hero-2.png', 'hero-3.png'], 'from 是改名前');
+      deepEqual(fs.readdirSync(dir).sort(), ['hero-5.png', 'hero-6.png', 'hero-7.png'], '没有残留临时文件');
+      equal(fs.readFileSync(path.join(dir, 'hero-5.png'), 'utf8'), 'x1', '第一个文件的内容要跟着改名');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('renameFramesToGlobalName：目标名已存在时走 uniqueTargetPath，绝不覆盖', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ase-rename-dup-'));
+    try {
+      fs.writeFileSync(path.join(dir, 'hero-5.png'), 'old');
+      const src = path.join(dir, 'hero-1.png');
+      fs.writeFileSync(src, 'new');
+      const out = w.renameFramesToGlobalName(dir, [{ path: src, name: 'hero-1.png', frame1: 5 }], '{title}-{frame1}.png', 'hero');
+      equal(out[0].to, 'hero-5-2.png', '已存在时加 -2');
+      equal(fs.readFileSync(path.join(dir, 'hero-5.png'), 'utf8'), 'old', '旧文件不能被覆盖');
+      equal(fs.readFileSync(path.join(dir, 'hero-5-2.png'), 'utf8'), 'new', '新内容落到 -2 文件');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('renameFramesToGlobalName：本批内部互撞不会白拿 -2（两段式改名）', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ase-rename-swap-'));
+    try {
+      // 区间内序号 1/2 → 全局 2/3：hero-1 的目标名 hero-2 正好是本批第二个文件
+      const items = [1, 2].map((i) => {
+        const p = path.join(dir, 'hero-' + i + '.png');
+        fs.writeFileSync(p, 'v' + i);
+        return { path: p, name: 'hero-' + i + '.png', frame1: i + 1 };
+      });
+      const out = w.renameFramesToGlobalName(dir, items, '{title}-{frame1}.png', 'hero');
+      deepEqual(out.map((r) => r.to), ['hero-2.png', 'hero-3.png'], '不该出现 hero-2-2.png');
+      equal(fs.readFileSync(path.join(dir, 'hero-2.png'), 'utf8'), 'v1', 'hero-1 的内容 → hero-2');
+      equal(fs.readFileSync(path.join(dir, 'hero-3.png'), 'utf8'), 'v2', 'hero-2 的内容 → hero-3');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('flagOn / spriteTitle：布尔开关与源文件 basename', () => {
+    equal(w.flagOn(undefined), false, '缺省 false');
+    equal(w.flagOn(''), false);
+    equal(w.flagOn(true), true);
+    equal(w.flagOn(false), false);
+    equal(w.flagOn('true'), true);
+    equal(w.flagOn('TRUE'), true);
+    equal(w.flagOn('1'), true);
+    equal(w.flagOn('0'), false);
+    equal(w.flagOn('false'), false);
+    equal(w.spriteTitle('F:/a/b/sprite.aseprite'), 'sprite');
+    equal(w.spriteTitle('C:\\a\\b\\中文 名.aseprite'), '中文 名');
+    equal(w.spriteTitle('noext'), 'noext');
+  });
+
   // ---- 落点（按份数自动判定）----------------------------------------------
   test('resolveExportDir：auto 按份数决定（≥2 → exports/，1 → 同目录）', () => {
     const src = 'F:/a/b/sprite.aseprite';
@@ -425,6 +545,12 @@ function register() {
     assert(!frameTool.parameters.properties.from, 'sheet 不该暴露 from（1.3.18.6 不支持）');
     assert(!frameTool.parameters.properties.tag, 'sheet 不该暴露 tag（1.3.18.6 不支持）');
     assert(frameTool.parameters.properties.out_dir, 'sheet 也要能指定 out_dir');
+    const framesTool = m.tools.find((t) => t.name === 'ase_export_frames');
+    const globalFlag = framesTool.parameters.properties.name_from_global_frame;
+    assert(globalFlag, 'ase_export_frames 要暴露 name_from_global_frame');
+    equal(globalFlag.type, 'boolean', 'name_from_global_frame 应是布尔');
+    assert(globalFlag.description.includes('默认 false'), '参数说明要写清默认值：' + globalFlag.description);
+    assert(globalFlag.description.includes('全局帧号'), '参数说明要写清按全局帧号命名：' + globalFlag.description);
     for (const t of m.tools.filter((x) => x.name !== 'ase_doctor' && x.name !== 'ase_info' && x.name !== 'ase_preview')) {
       assert(/exports\//.test(t.description), t.name + ' 的描述里要写清 exports/ 落点规则');
     }
@@ -448,6 +574,8 @@ function register() {
     assert(src.includes('cancelWithCall'), 'node 请求要带 cancelWithCall');
     assert(src.includes('aseprite-cli'), '设置页 BroadcastChannel 名称要一致');
     assert(src.includes('exportDirMode'), 'main.js 要把落点模式传给 worker');
+    assert(src.includes('name_from_global_frame'), 'main.js 要转发 name_from_global_frame');
+    assert(src.includes('nameFromGlobalFrame'), 'main.js 要把开关传给 worker');
     assert(src.includes("!== undefined") && src.includes('exportSubdir'), '老设置 exportSubdir 要能迁移');
   });
 
