@@ -54,6 +54,111 @@ function register() {
     equal(w.frameRangeArg({ from: null, to: null }), null);
   });
 
+  test('resolveFrameRange：1 基 → 0 基边界（from=1 得 0、from=to=N 得 N-1）', () => {
+    deepEqual(w.resolveFrameRange(1, 1), { from: 0, to: 0 }, '第 1 帧 → CLI 0,0');
+    for (const n of [2, 7, 8, 19, 42]) {
+      deepEqual(w.resolveFrameRange(n, n), { from: n - 1, to: n - 1 }, 'from=to=' + n + ' 应得 ' + (n - 1));
+    }
+    deepEqual(w.resolveFrameRange(undefined, 8), { from: 0, to: 7 }, '只传 to → 从第 1 帧起');
+    deepEqual(w.resolveFrameRange(8, undefined), { from: 7, to: 7 }, '只传 from → 只导这一帧');
+    deepEqual(w.resolveFrameRange(2, 8, 8), { from: 1, to: 7 }, 'to 正好等于 frameCount 不算越界');
+    throws(() => w.resolveFrameRange(1, 9, 8), 'INVALID_ARGS', '多发一帧要拒绝');
+    throws(() => w.resolveFrameRange('1', 'abc'), 'INVALID_ARGS', '非数字要拒绝');
+  });
+
+  test('resolveFrameStart：tag 用标签起始帧，普通范围用 from+1', () => {
+    const tags = [{ name: 'walk', from: 5, to: 9 }];
+    equal(w.resolveFrameStart('walk', tags, { from: null, to: null }), 5, 'tag → 标签的 fromFrame');
+    equal(w.resolveFrameStart(null, tags, { from: 2, to: 4 }), 3, '范围 → 1 基起始帧');
+    equal(w.resolveFrameStart(null, tags, { from: null, to: null }), 1, '全部帧 → 从 1 开始');
+    equal(w.resolveFrameStart('missing', tags, { from: null, to: null }), null, '标签不存在 → null（不编造）');
+  });
+
+  // ---- 帧号 ↔ 文件名对照（frameMapping）------------------------------------
+  test('buildFrameMapping：默认 {frame1} 模板按文件名反推，帧号与 Studio 一致', () => {
+    const names = ['hero-1.png', 'hero-2.png', 'hero-3.png'];
+    const r = w.buildFrameMapping(names, '{title}-{frame1}.png', 1);
+    deepEqual(r.frameMapping, [
+      { file: 'hero-1.png', frame1: 1, frame0: 0 },
+      { file: 'hero-2.png', frame1: 2, frame0: 1 },
+      { file: 'hero-3.png', frame1: 3, frame0: 2 },
+    ]);
+    assert(r.note.includes('{frame1}') && r.note.includes('{frame}/{frame0}'), 'note 要写清两种占位符的基准：' + r.note);
+    assert(r.note.includes('1 基') && r.note.includes('0 基'), 'note 要提到 1 基 / 0 基：' + r.note);
+  });
+
+  test('buildFrameMapping：从中间帧开始时按起始帧号配对', () => {
+    const r = w.buildFrameMapping(['hero-4.png', 'hero-5.png'], '{title}-{frame1}.png', 4);
+    deepEqual(r.frameMapping, [
+      { file: 'hero-4.png', frame1: 4, frame0: 3 },
+      { file: 'hero-5.png', frame1: 5, frame0: 4 },
+    ]);
+  });
+
+  test('buildFrameMapping：{frame} 是 0 基，文件名 0 对应第 1 帧', () => {
+    const r = w.buildFrameMapping(['f0.png', 'f1.png', 'f2.png'], 'f{frame}.png', 1);
+    deepEqual(r.frameMapping, [
+      { file: 'f0.png', frame1: 1, frame0: 0 },
+      { file: 'f1.png', frame1: 2, frame0: 1 },
+      { file: 'f2.png', frame1: 3, frame0: 2 },
+    ]);
+    const z = w.buildFrameMapping(['z-0.png'], 'z-{frame0}.png', 1);
+    deepEqual(z.frameMapping, [{ file: 'z-0.png', frame1: 1, frame0: 0 }], '{frame0} 同样 0 基');
+  });
+
+  test('buildFrameMapping：配 --tag 时文件名是标签内序号，要换算回全局帧号', () => {
+    const r = w.buildFrameMapping(['hero-1.png', 'hero-2.png'], '{title}-{frame1}.png', 5, '标签内');
+    deepEqual(r.frameMapping, [
+      { file: 'hero-1.png', frame1: 5, frame0: 4 },
+      { file: 'hero-2.png', frame1: 6, frame0: 5 },
+    ]);
+    assert(r.note.includes('标签内'), 'note 要如实说明换算过：' + r.note);
+  });
+
+  test('buildFrameMapping：{frame} 从中间帧开始导出时，文件名是区间内序号', () => {
+    // 实测：--frame-range 4,5 配 q-{frame}.png 得到 q-0 / q-1（区间内 0 基），
+    // 不能拿文件名当全局帧号。
+    const r = w.buildFrameMapping(['q-0.png', 'q-1.png'], 'q-{frame}.png', 5);
+    deepEqual(r.frameMapping, [
+      { file: 'q-0.png', frame1: 5, frame0: 4 },
+      { file: 'q-1.png', frame1: 6, frame0: 5 },
+    ]);
+    assert(r.note.includes('导出区间内'), 'note 要说明是区间内序号：' + r.note);
+  });
+
+  test('buildFrameMapping：自定义模板没有帧号占位符时按产物顺序配对', () => {
+    const r = w.buildFrameMapping(['a.png', 'b.png'], 'fixed.png', 4);
+    deepEqual(r.frameMapping, [
+      { file: 'a.png', frame1: 4, frame0: 3 },
+      { file: 'b.png', frame1: 5, frame0: 4 },
+    ]);
+    assert(r.note.includes('未含帧号占位符'), 'note 要说明无法按名对应：' + r.note);
+    const single = w.buildFrameMapping(['only.png'], 'fixed.png', 1);
+    deepEqual(single.frameMapping, [{ file: 'only.png', frame1: 1, frame0: 0 }], '单帧也能对上');
+  });
+
+  test('buildFrameMapping：给不出起始帧就返回空数组，不编造', () => {
+    const noBase = w.buildFrameMapping(['a.png'], 'fixed.png', null);
+    deepEqual(noBase.frameMapping, []);
+    assert(noBase.note.includes('无法自动对应'), 'note 要如实说明：' + noBase.note);
+    const empty = w.buildFrameMapping([], '{title}-{frame1}.png', 1);
+    deepEqual(empty.frameMapping, [], '没有产物就没有对照');
+    assert(empty.note.length > 0, '空结果也要有 note');
+  });
+
+  test('frameNumberFromFileName：模板里的 {title} 当通配，抠出 1 基帧号', () => {
+    equal(w.frameNumberFromFileName('中文 名-7.png', '{title}-{frame1}.png'), 7);
+    equal(w.frameNumberFromFileName('中文 名-6.png', '{title}-{frame}.png'), 7, '{frame} 要 +1');
+    equal(w.frameNumberFromFileName('other.png', '{title}-{frame1}.png'), null, '对不上返回 null');
+    equal(w.frameNumberFromFileName('a-1.png', 'plain.png'), null, '没有帧号占位符返回 null');
+    equal(w.frameNumberFromFileName('a-1__2.png', '{title}-{frame1}__{frame}.png'), null, '多个帧号占位符不猜');
+  });
+
+  test('compareFileNames：数字段按数值排（frame_2 在 frame_10 前）', () => {
+    const sorted = ['frame_10.png', 'frame_2.png', 'frame_1.png'].sort(w.compareFileNames);
+    deepEqual(sorted, ['frame_1.png', 'frame_2.png', 'frame_10.png']);
+  });
+
   // ---- 落点（按份数自动判定）----------------------------------------------
   test('resolveExportDir：auto 按份数决定（≥2 → exports/，1 → 同目录）', () => {
     const src = 'F:/a/b/sprite.aseprite';

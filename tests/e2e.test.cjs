@@ -206,7 +206,8 @@ function register() {
     ctx.height = spr.height;
     ctx.visibleLayerNames = leaves.filter((l) => l.visible !== false).map((l) => l.name);
     ctx.hiddenLayerNames = leaves.filter((l) => l.visible === false).map((l) => l.name);
-    ctx.tag = info.tags[0] || null;
+    // 优先挑一个不是从第 1 帧开始的标签：这样才能验证「标签内序号 → 全局帧号」的换算
+    ctx.tag = info.tags.find((t) => t.from > 1) || info.tags[0] || null;
     return spr.width + '×' + spr.height + ' / ' + spr.frameCount + ' 帧 / ' + info.layerCount + ' 图层 / ' + info.tags.length + ' 标签 / ' + info.palette.size + ' 色';
   });
 
@@ -227,6 +228,8 @@ function register() {
     equal(size.width, ctx.width, '预览宽应与画布一致');
     equal(size.height, ctx.height, '预览高应与画布一致');
     equal(res.frame, frame, '帧号');
+    equal(res.frame1, frame, 'frame1 就是入参的 1 基帧号');
+    equal(res.frame0, frame - 1, 'frame0 是 CLI 的 0 基编号');
     equal(res.frameCount, ctx.frameCount, '总帧数');
     assert(buf.length > 100, 'PNG 太小了，可能是空图');
     equal(countTempDirs('cindy-aseprite-preview-'), beforeDirs, '临时目录必须清理干净');
@@ -274,7 +277,61 @@ function register() {
     const outDir = path.join(OUT_ROOT, 'frames-tag');
     const res = await c.callOk('ase/export_frames', { asepritePath: aseprite, source: SAMPLE, outDir, tag: ctx.tag.name });
     equal(res.count, ctx.tag.to - ctx.tag.from + 1, '标签「' + ctx.tag.name + '」是第 ' + ctx.tag.from + '–' + ctx.tag.to + ' 帧');
+    equal(res.frameMapping.length, res.count, 'frameMapping 条数应等于产物数');
+    equal(res.frameMapping[0].frame1, ctx.tag.from, 'tag 导出要把标签内序号换算成全局帧号（起始）');
+    equal(res.frameMapping[res.frameMapping.length - 1].frame1, ctx.tag.to, 'tag 导出要把标签内序号换算成全局帧号（结束）');
+    for (const m of res.frameMapping) equal(m.frame0, m.frame1 - 1, 'frame0 = frame1 - 1');
     return res.count + ' 个文件';
+  });
+
+  test('ase_export_frames：frameMapping 与落盘文件名、帧号三者一致', async () => {
+    requireInfo();
+    if (ctx.frameCount < 2) throw skipped('样本只有 1 帧，测不了多帧对照');
+    const c = await client();
+    const to = Math.min(3, ctx.frameCount);
+    const outDir = path.join(OUT_ROOT, 'frames-map');
+    const res = await c.callOk('ase/export_frames', { asepritePath: aseprite, source: SAMPLE, outDir, from: 1, to });
+
+    equal(res.frameMapping.length, to, 'frameMapping 条数应等于帧数');
+    equal(res.count, to, '产物数应等于帧数');
+    const onDisk = fs.readdirSync(outDir).sort();
+    deepEqual(res.frameMapping.map((m) => m.file).sort(), onDisk, 'frameMapping 的 file 必须是真实落盘文件名');
+    res.frameMapping.forEach((m, i) => {
+      equal(m.frame1, i + 1, '第 ' + (i + 1) + ' 条应对应第 ' + (i + 1) + ' 帧');
+      equal(m.frame0, i, 'frame0 是 0 基编号');
+      assert(m.file.includes(String(m.frame1)), '默认模板的文件名里应是 1 基帧号：' + m.file);
+      assert(fs.existsSync(path.join(outDir, m.file)), '文件不存在：' + m.file);
+    });
+    // 关键回归：默认模板是 {frame1}，文件名里绝不应该是 0 基（不该出现 -0.png）
+    assert(!res.frameMapping.some((m) => /-0\.png$/.test(m.file)), '默认模板不该产出 0 基文件名');
+    assert(
+      typeof res.frameMappingNote === 'string' && res.frameMappingNote.includes('{frame1}'),
+      'note 要点明 {frame1} 是 1 基：' + res.frameMappingNote
+    );
+
+    // 显式要 0 基文件名时，映射要如实跟着变（实测 {frame} 是「导出区间内」的 0 基序号：
+    // 从第 2 帧开始导，会得到 zero-0 / zero-1，绝不能拿文件名当全局帧号）
+    if (ctx.frameCount >= 3) {
+      const zeroDir = path.join(OUT_ROOT, 'frames-map-zero');
+      const zero = await c.callOk('ase/export_frames', {
+        asepritePath: aseprite,
+        source: SAMPLE,
+        outDir: zeroDir,
+        from: 2,
+        to: 3,
+        nameTemplate: 'zero-{frame}.png',
+      });
+      deepEqual(
+        zero.frameMapping,
+        [
+          { file: 'zero-0.png', frame1: 2, frame0: 1 },
+          { file: 'zero-1.png', frame1: 3, frame0: 2 },
+        ],
+        '{frame} 是 0 基：从第 2 帧起的文件叫 zero-0 / zero-1，但它们是第 2 / 3 帧'
+      );
+      assert(zero.frameMappingNote.includes('导出区间内'), 'note 要说明文件名是区间内序号：' + zero.frameMappingNote);
+    }
+    return to + ' 帧：' + res.frameMapping.map((m) => m.file + '=' + m.frame1).join('、');
   });
 
   test('ase_export_frames：全部帧', async () => {

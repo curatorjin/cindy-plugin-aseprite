@@ -113,6 +113,17 @@ function fileLines(files, limit) {
   return lines;
 }
 
+/** 帧号 → 文件名对照（最多列 8 行，完整数组在 result.frameMapping 里） */
+function frameMappingLines(result) {
+  const map = Array.isArray(result.frameMapping) ? result.frameMapping : [];
+  if (!map.length) return [];
+  const shown = map.slice(0, 8);
+  const lines = ['帧号 → 文件名（frame1 与 Studio 一致，frame0 是 CLI 0 基）：'];
+  for (const m of shown) lines.push('  第 ' + m.frame1 + ' 帧（0 基 ' + m.frame0 + '）→ ' + m.file);
+  if (map.length > shown.length) lines.push('  … 还有 ' + (map.length - shown.length) + ' 帧，完整对应见 result.frameMapping');
+  return lines;
+}
+
 // ---------------------------------------------------------------------------
 // 各工具的文本结果（模型直接读这段，结构化数据放 result 里）
 // ---------------------------------------------------------------------------
@@ -282,6 +293,7 @@ async function runTool(toolName, msg) {
     const lines = [
       baseNameOf(result.source) + ' 第 ' + result.frame + (result.frameCount ? ' / ' + result.frameCount : '') + ' 帧',
       '导出尺寸 ' + result.width + '×' + result.height + '，' + formatBytes(result.bytes) + (result.scale !== 1 ? '（缩放 ' + result.scale + '）' : ''),
+      '帧号：frame ' + result.frame1 + '（1 基，与 Studio 一致）＝ CLI 0 基 ' + result.frame0 + '；预览按 1 基读取，不靠导出文件名反推。',
       '图片已存进媒体库，聊天里可以直接看到；要看别的帧就把 frame 换成对应帧号。',
     ];
     return { text: lines.join('\n'), result };
@@ -294,10 +306,12 @@ async function runTool(toolName, msg) {
       '目录：' + result.outDir,
       dirModeText(result),
       result.tag ? '筛选：tag ' + result.tag : result.frameRange ? '帧范围：' + result.frameRange.from + '–' + result.frameRange.to : '帧范围：全部',
-      '文件名按 1 起的帧号编号（模板 ' + (result.template || '{title}-{frame1}.png') + '）。',
+      '文件名模板：' + (result.template || '{title}-{frame1}.png') + '（帧号对照见下，文件名里的数字不一定等于 Studio 帧号）。',
     ];
     const rnFrames = renamedText(result);
     if (rnFrames) lines.push(rnFrames);
+    for (const l of frameMappingLines(result)) lines.push(l);
+    if (result.frameMappingNote) lines.push(result.frameMappingNote);
     for (const l of fileLines(result.files, 12)) lines.push(l);
     return { text: lines.join('\n'), result };
   }

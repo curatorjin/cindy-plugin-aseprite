@@ -179,6 +179,20 @@ function frameRangeArg(range) {
 }
 
 /**
+ * 这一批导出的第一帧在 Studio 里的 1 基帧号。
+ * 配了 --tag 时文件名里的帧号是标签内序号，得用标签的 fromFrame 换算回全局帧号；
+ * 拿不到标签信息就返回 null（不编造）。
+ */
+function resolveFrameStart(tagName, tags, range) {
+  if (tagName) {
+    const hit = (tags || []).find((t) => t.name === tagName);
+    return hit && Number.isInteger(hit.from) && hit.from >= 1 ? hit.from : null;
+  }
+  if (range && range.from !== null) return range.from + 1;
+  return 1;
+}
+
+/**
  * 导出落点（按份数自动判定）：
  *   - 显式给了 out_dir → 就用它；
  *   - always → 源文件目录下的 exports/；
@@ -293,6 +307,126 @@ function defaultLayerTemplate() {
 
 function defaultSheetName() {
   return '{title}-sheet';
+}
+
+// --- 帧号 ↔ 文件名对照 -----------------------------------------------------
+
+/** 文件名里的帧号占位符：{frame1} 是 1 起；{frame}/{frame0} 是 0 起（1.3.18.6 实测） */
+const FRAME_PLACEHOLDER_RE = /\{frame1\}|\{frame0\}|\{frame\}/g;
+
+const FRAME_NUMBERING_NOTE = '文件名中的 {frame1} 与 Studio 帧号一致（1 基）；{frame}/{frame0} 为 0 基';
+
+/** 文件名里不是全局帧号时用的占位符说明（不承诺“与 Studio 一致”） */
+const FRAME_PLACEHOLDER_BASE_NOTE = '占位符约定：{frame1} 是 1 基，{frame}/{frame0} 是 0 基';
+
+/** 模板里恰好一个帧号占位符时返回它（Aseprite 只替换先出现的那个，多个就别猜） */
+function framePlaceholderIn(template) {
+  const hits = String(template == null ? '' : template).match(FRAME_PLACEHOLDER_RE) || [];
+  return hits.length === 1 ? hits[0] : null;
+}
+
+function escapeRegExp(text) {
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** 把 --save-as 模板变成匹配实际文件名的正则：帧号占位符抽成捕获组，其它占位符当通配 */
+function buildFrameNameRegExp(template) {
+  const src = String(template == null ? '' : template);
+  const token = /\{([A-Za-z0-9_]+)\}/g;
+  let out = '^';
+  let last = 0;
+  let captures = 0;
+  let m;
+  while ((m = token.exec(src)) !== null) {
+    out += escapeRegExp(src.slice(last, m.index));
+    const name = m[1];
+    if (name === 'frame' || name === 'frame0' || name === 'frame1') {
+      out += '(\\d+)';
+      captures += 1;
+    } else {
+      out += '[\\s\\S]*?';
+    }
+    last = m.index + m[0].length;
+  }
+  out += escapeRegExp(src.slice(last)) + '$';
+  if (captures !== 1) return null;
+  return new RegExp(out);
+}
+
+/** 从实际文件名反推 1 起帧号（按模板里那个占位符的语义换算）；抠不出来返回 null */
+function frameNumberFromFileName(fileName, template) {
+  const ph = framePlaceholderIn(template);
+  const re = buildFrameNameRegExp(template);
+  if (!ph || !re) return null;
+  const m = re.exec(String(fileName == null ? '' : fileName));
+  if (!m) return null;
+  const n = Number(m[1]);
+  if (!Number.isInteger(n) || n < 0) return null;
+  return ph === '{frame1}' ? n : n + 1;
+}
+
+/** 文件名按「数字段按数值」比较：frame_2.png 排在 frame_10.png 前面 */
+function compareFileNames(a, b) {
+  return String(a).localeCompare(String(b), 'en', { numeric: true, sensitivity: 'base' });
+}
+
+/**
+ * 帧号对照表：每帧一行 { file, frame1, frame0 }，数组顺序即帧序。
+ * names 是本次产物的文件名（按帧序）；startFrame1 是这批第一帧在 Studio 里的 1 基帧号。
+ * 优先按文件名反推（模板里带帧号占位符时）；反推不出来、或名字里的序号不是全局帧号
+ * （例如配了 --tag 时是标签内序号）就按产物顺序配对；连起始帧都不知道就返回空数组 + note。
+ */
+function buildFrameMapping(names, template, startFrame1, scopeLabel) {
+  const list = (Array.isArray(names) ? names : []).map((n) => String(n));
+  const base = Number.isInteger(startFrame1) && startFrame1 >= 1 ? startFrame1 : null;
+  const ph = framePlaceholderIn(template);
+  const scope = scopeLabel || '导出区间内';
+
+  if (list.length === 0) {
+    return { frameMapping: [], note: '本次没有产物文件，无法给出帧号对照' };
+  }
+
+  if (!ph) {
+    if (base === null) {
+      return { frameMapping: [], note: '自定义模板未含帧号占位符，无法自动对应（也拿不到起始帧号）' };
+    }
+    return {
+      frameMapping: list.map((file, i) => ({ file, frame1: base + i, frame0: base + i - 1 })),
+      note:
+        '自定义模板未含帧号占位符，文件名里没有帧号，只能按产物顺序配对：第 ' +
+        base +
+        '–' +
+        (base + list.length - 1) +
+        ' 帧；' +
+        FRAME_NUMBERING_NOTE,
+    };
+  }
+
+  const parsed = list.map((f) => frameNumberFromFileName(f, template));
+  const parsedAll = parsed.every((n) => Number.isInteger(n));
+  // 名字里的帧号必须从 startFrame1 起逐帧递增才算可信
+  const namedOk = parsedAll && (base === null || parsed[0] === base) && parsed.every((n, i) => n === parsed[0] + i);
+  const first = namedOk ? parsed[0] : base;
+  if (first === null) {
+    return { frameMapping: [], note: '模板未含可识别的帧号占位符，无法自动对应（也拿不到起始帧号）' };
+  }
+  const frameMapping = list.map((file, i) => ({ file, frame1: first + i, frame0: first + i - 1 }));
+  const span = '本次 ' + frameMapping.length + ' 帧：第 ' + first + '–' + (first + list.length - 1) + ' 帧';
+  let note;
+  if (namedOk) {
+    note = FRAME_NUMBERING_NOTE + '。' + span + '（文件名里的帧号已核对）';
+  } else if (parsedAll && parsed[0] === 1) {
+    // 文件名里是相对序号（配 --tag 是标签内，限定范围时是区间内），不是 Studio 全局帧号
+    note =
+      span +
+      '；文件名里是' +
+      scope +
+      '的序号，不是 Studio 全局帧号，已按实际帧序换算。' +
+      FRAME_PLACEHOLDER_BASE_NOTE;
+  } else {
+    note = span + '（模板占位符和文件名对不上，按产物顺序配对）。' + FRAME_PLACEHOLDER_BASE_NOTE;
+  }
+  return { frameMapping, note };
 }
 
 // --- 参数拼装 -------------------------------------------------------------
@@ -696,15 +830,30 @@ const frameCountCache = new Map();
 
 function buildCountLua(sourcePath) {
   const luaString = '"' + toPosix(sourcePath).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+  // 顺手把标签的起止帧带回来：配 --tag 导出时要把标签内序号换算成 Studio 全局帧号
   return [
     'local ok, sp = pcall(app.open, ' + luaString + ')',
-    'if ok and sp ~= nil then print("ASEFRAMES " .. tostring(#sp.frames)) else print("ASEFRAMES 0") end',
+    'if ok and sp ~= nil then',
+    '  print("ASEFRAMES " .. tostring(#sp.frames))',
+    '  local okTags, encoded = pcall(function()',
+    '    local acc = {}',
+    '    for i = 1, #sp.tags do',
+    '      local t = sp.tags[i]',
+    '      acc[#acc + 1] = { name = t.name, from = t.fromFrame.frameNumber, to = t.toFrame.frameNumber }',
+    '    end',
+    '    return json.encode(acc)',
+    '  end)',
+    '  if okTags and encoded ~= nil then print("ASETAGS " .. encoded) end',
+    'else',
+    '  print("ASEFRAMES 0")',
+    'end',
     'app.exit(0)',
     '',
   ].join('\n');
 }
 
-async function getFrameCount(asePath, src) {
+/** 帧数 + 标签起止帧（同一次 Lua 调用拿回来，一起缓存） */
+async function getSpriteMeta(asePath, src) {
   let mtimeMs = 0;
   try {
     mtimeMs = fs.statSync(src.path).mtimeMs;
@@ -721,14 +870,35 @@ async function getFrameCount(asePath, src) {
     const run = await runAseprite(asePath, ['-b', '--script', toPosix(scriptPath)], { timeoutMs: 60000 });
     const m = /ASEFRAMES\s+(\d+)/.exec(run.stdout);
     const count = m ? Number(m[1]) : 0;
+    let tags = [];
+    const tagMatch = /ASETAGS\s+(\[[^\n]*\])/.exec(run.stdout);
+    if (tagMatch) {
+      try {
+        const parsed = JSON.parse(tagMatch[1]);
+        if (Array.isArray(parsed)) {
+          tags = parsed.filter(
+            (t) => t && typeof t.name === 'string' && Number.isInteger(t.from) && Number.isInteger(t.to)
+          );
+        }
+      } catch {
+        /* 标签信息拿不到不影响帧数校验，只是 --tag 导出时无法给出全局帧号 */
+      }
+    }
+    const meta = { frameCount: count, tags };
     if (count > 0) {
       if (frameCountCache.size >= 32) frameCountCache.delete(frameCountCache.keys().next().value);
-      frameCountCache.set(key, count);
+      frameCountCache.set(key, meta);
     }
-    return count;
+    return meta;
   } finally {
     removeDir(tmp);
   }
+}
+
+/** 只要帧数时用这个（老的调用点签名不变） */
+async function getFrameCount(asePath, src) {
+  const meta = await getSpriteMeta(asePath, src);
+  return meta.frameCount || 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -995,7 +1165,10 @@ async function methodDoctor(params) {
       supportedFlags: supported,
       missingFlags: missing,
       supportsLegacyPaddingOption: hasLegacyPadding,
-      frameNumbering: '--frame-range 与 {frame}/{frame0} 为 0 起，{frame1} 为 1 起',
+      frameNumbering:
+        '--frame-range 与 {frame}/{frame0} 为 0 起，{frame1} 为 1 起；--save-as 文件名有 0 基陷阱：' +
+        '--frame-range 7,7 --save-as f7.png 导出的是第 8 帧，全量 frame_{frame}.png 得到 frame_0…frame_(N-1)，' +
+        '照着文件名猜帧号会整体错一帧（本插件工具入参一律 1 基，默认模板用 {frame1}）',
       splitLayersWithSheet: '实测 --split-layers 配 --sheet 不生效，只认 --save-as',
       splitLayersIncludesGroups: '实测分组图层会连同子层各导一张',
       allLayersEffective: false,
@@ -1123,6 +1296,9 @@ async function methodPreview(params) {
       height: result.size ? result.size.height : null,
       scale: result.scale,
       frame,
+      frame1: frame,
+      frame0: frame - 1,
+      frameNumbering: 'frame 按 1 基读取，与 Studio 里看到的帧号一致；CLI 的 --frame-range 是 0 基',
       frameCount,
       source: src.path,
       aseprite: { path: ase.path },
@@ -1138,8 +1314,10 @@ async function methodExportFrames(params) {
   const src = requireSourceFile(p.source);
   const scale = normalizeScale(p.scale, 1);
   const mode = sanitizeExportDirMode(p.exportDirMode);
-  const frameCount = await getFrameCount(ase.path, src);
+  const spriteMeta = await getSpriteMeta(ase.path, src);
+  const frameCount = spriteMeta.frameCount;
   const range = resolveFrameRange(p.from, p.to, frameCount > 0 ? frameCount : undefined);
+  const tagName = p.tag ? String(p.tag) : null;
   const templateName = p.nameTemplate ? String(p.nameTemplate) : defaultFrameTemplate();
   validateNameTemplate(templateName, ['{frame}', '{frame1}', '{frame0}'], 'ase_export_frames');
   if (!/\.png$/i.test(templateName)) {
@@ -1168,6 +1346,18 @@ async function methodExportFrames(params) {
       );
     }
     const placed = placeStagedFiles(staging, staged, src.path, p.outDir, mode);
+    // 帧号对照：先拿这批的第一帧在 Studio 里的 1 基帧号，再拿实际落盘文件名按帧序配对
+    const startFrame1 = resolveFrameStart(tagName, spriteMeta.tags, range);
+    const sortedStaged = staged.slice().sort((a, b) => compareFileNames(a.name, b.name));
+    const mapping = buildFrameMapping(
+      sortedStaged.map((f) => path.basename(f.name)),
+      templateName,
+      startFrame1,
+      tagName ? '标签内' : '导出区间内'
+    );
+    const frameMapping = mapping.frameMapping.map((item, i) =>
+      placed.files[i] ? { file: placed.files[i].name, frame1: item.frame1, frame0: item.frame0 } : item
+    );
     return {
       outDir: placed.outDir,
       exportDirMode: placed.mode,
@@ -1175,7 +1365,9 @@ async function methodExportFrames(params) {
       count: placed.files.length,
       renamed: placed.renamed,
       frameRange: range.from === null ? null : { from: range.from + 1, to: range.to + 1 },
-      tag: p.tag || null,
+      tag: tagName,
+      frameMapping,
+      frameMappingNote: mapping.note,
       template: templateName,
       scale,
       aseprite: { path: ase.path },
@@ -1360,7 +1552,8 @@ function placeStagedFiles(stagingDir, staged, sourcePath, outDir, mode) {
   fs.mkdirSync(finalDir, { recursive: true });
   const files = [];
   const renamed = [];
-  const sorted = staged.slice().sort((a, b) => a.name.localeCompare(b.name, 'en'));
+  // 数字段按数值排序：frame_2 在 frame_10 之前，结果里的 files 顺序即帧序
+  const sorted = staged.slice().sort((a, b) => compareFileNames(a.name, b.name));
   for (const f of sorted) {
     const wanted = path.basename(f.name);
     const target = uniqueTargetPath(finalDir, wanted);
@@ -1488,7 +1681,15 @@ module.exports = {
   sanitizeBaseName,
   normalizeScale,
   resolveFrameRange,
+  resolveFrameStart,
   frameRangeArg,
+  framePlaceholderIn,
+  buildFrameNameRegExp,
+  frameNumberFromFileName,
+  buildFrameMapping,
+  compareFileNames,
+  FRAME_NUMBERING_NOTE,
+  FRAME_PLACEHOLDER_BASE_NOTE,
   resolveExportDir,
   EXPORT_DIR_MODES,
   sanitizeExportDirMode,
