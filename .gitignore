@@ -1,0 +1,16 @@
+# 打包产物（由 ghost.json + 源码重新构建，不入库）
+*.cindy
+
+# 测试 / 手动验证的落点
+tmp/
+
+# 依赖（本插件零依赖，正式包也不允许安装）
+node_modules/
+
+# 操作系统杂项
+.DS_Store
+Thumbs.db
+
+# 本地配置 / 凭证
+.env
+.env.*

@@ -1,0 +1,219 @@
+{
+  "schemaVersion": 3,
+  "minCindyVersion": "0.1.129",
+  "id": "aseprite-cli",
+  "name": "Aseprite 工具箱",
+  "description": "读取 Aseprite(.aseprite)文件的尺寸、帧、图层树、动画标签、切片、调色板结构，并导出 PNG 逐帧图、sprite sheet、逐层图。全部通过调用本机 aseprite.exe 命令行完成。",
+  "whenToUse": "需要查看 .aseprite 文件的尺寸、帧数与时长、图层树、动画标签、切片/九宫格/轴心、调色板、tileset，或要把 Aseprite 源文件导出成 PNG 帧、sprite sheet、逐层图，或检查本机 Aseprite 命令行能否使用时找我。",
+  "version": "1.0.1",
+  "kind": "chip",
+  "entry": "main.js",
+  "command": "aseprite",
+  "settingsHtml": "settings.html",
+  "settingsHeight": 420,
+  "cindy": {
+    "media": ["deposit"]
+  },
+  "node": {
+    "entry": "node/worker.cjs",
+    "protocol": "json-rpc-stdio",
+    "lifecycle": "on-demand",
+    "idleTimeoutSeconds": 240
+  },
+  "tools": [
+    {
+      "name": "ase_doctor",
+      "description": "检查本机 aseprite.exe 是否可用：路径是否有效、版本号、1.3.18.6 这一代需要的命令行参数是否齐全，并给出可执行的修复指引。会真实启动一次 aseprite.exe（--version、--help、一次参数探测）。拿不到结果、报错莫名其妙、或用户问“为什么用不了”时先调用它；其它工具报 ASEPRITE_NOT_FOUND 时也用它定位。不读不写用户文件。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "可选，顺便检查这个 .aseprite 文件是否存在（不打开、不修改）。排查“文件读不到”时传上"
+          }
+        }
+      }
+    },
+    {
+      "name": "ase_info",
+      "description": "读取一个 .aseprite 文件的完整结构并返回 JSON：画布尺寸与色彩模式、帧数与每帧时长、图层树（含可见性/不透明度/混合模式/父子分组）、动画标签（起止帧与播放方向）、切片（含九宫格中心与轴心）、调色板颜色、tileset。只读，通过 aseprite.exe 跑一段随包 Lua 脚本得到结果（不解析二进制）。想把 Aseprite 源文件交给程序/引擎、或需要知道有多少帧多少层时用它。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": ".aseprite 文件的完整路径，例如 <你的素材目录>\\example.aseprite。含中文、空格都可以，原样传，不要转义"
+          },
+          "frame_limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20000,
+            "description": "逐帧时长最多返回多少帧，默认 1000；超出的部分丢弃并在 warnings 里说明"
+          }
+        },
+        "required": ["path"]
+      }
+    },
+    {
+      "name": "ase_preview",
+      "description": "把 .aseprite 的指定一帧导出成 PNG，存进 Cindy 媒体库并在聊天里直接显示（用户说“给我看看这个 sprite / 第 N 帧长什么样”时用）。默认第 1 帧。图片过大时会自动降采样以保证能送回聊天；临时文件用完即删。只读源文件，不会修改它。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": ".aseprite 文件的完整路径，原样传，中文和空格都不用转义"
+          },
+          "frame": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "要看第几帧，从 1 开始，默认 1。超过总帧数会直接报错并告诉你总帧数"
+          },
+          "scale": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 32,
+            "description": "可选放大倍数，例如 4 会把 64×64 的帧导成 256×256，方便看清像素。默认 1"
+          }
+        },
+        "required": ["path"]
+      }
+    },
+    {
+      "name": "ase_export_frames",
+      "description": "把 .aseprite 逐帧导出成 PNG 序列。落点规则：产出 ≥2 个文件时放进源文件目录下的 exports/，只出 1 个文件时放在源文件同目录（设置里可改成一律 exports/ 或一律同目录；单次可用 out_dir 指定别处）。支持按帧范围（1 起）或按动画标签筛选，文件名默认 <原名>-<帧号>.png 且帧号从 1 开始。同名文件已存在时不会覆盖，会自动加 -2/-3 后缀并在结果里说明。会写入 PNG 文件；永不修改源文件。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": ".aseprite 文件的完整路径，原样传"
+          },
+          "from": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "起始帧，从 1 开始。只传 from 表示只导这一帧；不传 from/to 表示全部帧"
+          },
+          "to": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "结束帧（含），从 1 开始。留空表示到最后一帧"
+          },
+          "tag": {
+            "type": "string",
+            "description": "只导出这个动画标签覆盖的帧（标签名要和 Aseprite 里一致）。和 from/to 二选一"
+          },
+          "scale": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 32,
+            "description": "可选放大倍数，默认 1"
+          },
+          "trim": {
+            "type": "boolean",
+            "description": "可选，裁掉整张 sprite 周围的透明边（--trim）。默认 false"
+          },
+          "name_template": {
+            "type": "string",
+            "description": "可选文件名模板，可用 {title}、{frame}（0 起）、{frame1}（1 起）。默认 {title}-{frame1}.png"
+          },
+          "out_dir": {
+            "type": "string",
+            "description": "可选，导出目录的完整路径。不传就按落点规则：≥2 个文件进源目录下的 exports/，只 1 个落在源文件同目录"
+          }
+        },
+        "required": ["path"]
+      }
+    },
+    {
+      "name": "ase_export_sheet",
+      "description": "把 .aseprite 打成 sprite sheet：一张 PNG 图集 + 一份帧表 JSON（json-array 或 json-hash，含每帧矩形、时长、动画标签、图层、切片）。这一项固定产出 2 个文件，所以默认落进源文件目录下的 exports/（设置可改；也可用 out_dir 指定别处）；同名时 png 与 json 成对加 -2/-3 后缀且帧表的 meta.image 会同步改名，不会静默覆盖。支持布局类型、帧间/边缘 padding、缩放、裁剪。永不修改源文件。注意：本机 Aseprite 1.3.18.6 的 --sheet 不支持按帧范围或标签筛选（实测无效），要抽子集请先用 ase_export_frames。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": ".aseprite 文件的完整路径，原样传"
+          },
+          "sheet_type": {
+            "type": "string",
+            "enum": ["horizontal", "vertical", "rows", "columns", "packed"],
+            "description": "布局方式，默认 horizontal（所有帧横排）。packed 会紧凑排布，宽度高度不固定"
+          },
+          "padding": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 64,
+            "description": "帧与帧之间的间距（--shape-padding），默认 0。给引擎贴图避免采样串色时可以设 1–2"
+          },
+          "border_padding": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 64,
+            "description": "整张图集四周的留白（--border-padding），默认 0"
+          },
+          "scale": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 32,
+            "description": "可选放大倍数，默认 1"
+          },
+          "trim": {
+            "type": "boolean",
+            "description": "可选，裁掉透明边（此时帧表里 trimmed/spriteSourceSize 会体现偏移）。默认 false"
+          },
+          "format": {
+            "type": "string",
+            "enum": ["json-array", "json-hash"],
+            "description": "帧表格式：json-array 是数组（多数引擎/插件友好），json-hash 是以文件名为键的对象。默认 json-array"
+          },
+          "name_template": {
+            "type": "string",
+            "description": "可选输出基名，会生成 <基名>-sheet.png 与 <基名>-sheet.json。默认用源文件名"
+          },
+          "out_dir": {
+            "type": "string",
+            "description": "可选，导出目录的完整路径。不传就按落点规则（默认 exports/，因为图集固定 2 个文件）"
+          }
+        },
+        "required": ["path"]
+      }
+    },
+    {
+      "name": "ase_export_layers",
+      "description": "把 .aseprite 的每个图层分别导出成 PNG（--split-layers，按图层×帧各一个文件），文件名默认 <原名>-<图层名>-<帧号>.png。落点规则：产出 ≥2 个文件时进源目录下的 exports/，只有 1 个时落在源文件同目录（设置可改；也可用 out_dir 指定）；同名不覆盖，自动加 -2/-3 后缀并在结果里说明。会写入多个 PNG；永不修改源文件。实测本机 1.3.18.6：只导出可见图层（--all-layers 也带不出隐藏层，所以没有这个开关），分组图层会连同它的子层各出一张，并且只配合 --save-as 生效（配 --sheet 会静默忽略）。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": ".aseprite 文件的完整路径，原样传"
+          },
+          "scale": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 32,
+            "description": "可选放大倍数，默认 1"
+          },
+          "trim": {
+            "type": "boolean",
+            "description": "可选，裁掉透明边。默认 false"
+          },
+          "tag": {
+            "type": "string",
+            "description": "可选，只导出这个动画标签覆盖的帧"
+          },
+          "name_template": {
+            "type": "string",
+            "description": "可选文件名模板，必须包含 {layer}，可用 {title}、{frame1}。默认 {title}-{layer}-{frame1}.png"
+          },
+          "out_dir": {
+            "type": "string",
+            "description": "可选，导出目录的完整路径。不传就按落点规则：≥2 个文件进源目录下的 exports/，只 1 个落在源文件同目录"
+          }
+        },
+        "required": ["path"]
+      }
+    }
+  ]
+}

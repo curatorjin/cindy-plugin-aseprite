@@ -1,0 +1,86 @@
+<!doctype html>
+<meta charset="utf-8" />
+<body style="margin:0;padding:12px 14px;font-size:13px;line-height:1.6">
+  <div style="display:flex;flex-direction:column;gap:14px;max-width:640px">
+    <div>
+      <div style="font-weight:600;margin-bottom:6px">Aseprite 可执行文件</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input
+          id="asepritePath"
+          placeholder="例如 <盘符>:\SteamLibrary\steamapps\common\Aseprite\aseprite.exe"
+          style="flex:1 1 260px;min-width:0;padding:6px 8px;border-radius:6px;border:1px solid var(--border-default,#d8d8d2);background:var(--surface,#fff);color:inherit;font:inherit"
+        />
+        <button id="detect" style="padding:6px 12px;border-radius:6px;border:1px solid var(--border-default,#d8d8d2);background:var(--surface,#fff);color:inherit;font:inherit;cursor:pointer">
+          自动检测
+        </button>
+      </div>
+      <div id="detectHint" style="color:var(--text-secondary,#8a8a84);margin-top:4px">
+        留空时按「环境变量 ASEPRITE_PATH → PATH → 常见安装目录 → Steam 库」自动查找。
+      </div>
+    </div>
+
+    <div>
+      <div style="font-weight:600;margin-bottom:6px">导出落点</div>
+      <label style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <select
+          id="exportDirMode"
+          style="padding:4px 6px;border-radius:6px;border:1px solid var(--border-default,#d8d8d2);background:var(--surface,#fff);color:inherit;font:inherit"
+        >
+          <option value="auto">auto · 按份数自动（默认）</option>
+          <option value="always">always · 一律 exports/</option>
+          <option value="same">same · 一律源文件同目录</option>
+        </select>
+        <span id="modeHint" style="color:var(--text-secondary,#8a8a84)"></span>
+      </label>
+      <div style="color:var(--text-secondary,#8a8a84);margin-top:4px">
+        单次调用可传入自己的 <code>out_dir</code> 覆盖这里。源文件本身永远不会被修改。
+      </div>
+      <div style="color:var(--text-secondary,#8a8a84);margin-top:4px">
+        导出的文件名若已存在，不会静默覆盖：会自动加 <code>-2</code>、<code>-3</code> 后缀，并在工具结果里说明改了哪个。
+      </div>
+    </div>
+
+    <div>
+      <div style="font-weight:600;margin-bottom:6px">Sprite sheet 默认值</div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:6px">
+          布局
+          <select
+            id="sheetType"
+            style="padding:4px 6px;border-radius:6px;border:1px solid var(--border-default,#d8d8d2);background:var(--surface,#fff);color:inherit;font:inherit"
+          >
+            <option value="horizontal">horizontal（横排）</option>
+            <option value="vertical">vertical（竖排）</option>
+            <option value="rows">rows（按行）</option>
+            <option value="columns">columns（按列）</option>
+            <option value="packed">packed（紧凑）</option>
+          </select>
+        </label>
+        <label style="display:flex;align-items:center;gap:6px">
+          帧间距
+          <input id="shapePadding" type="number" min="0" max="64" step="1" style="width:64px;padding:4px 6px;border-radius:6px;border:1px solid var(--border-default,#d8d8d2);background:var(--surface,#fff);color:inherit;font:inherit" />
+        </label>
+        <label style="display:flex;align-items:center;gap:6px">
+          边缘留白
+          <input id="borderPadding" type="number" min="0" max="64" step="1" style="width:64px;padding:4px 6px;border-radius:6px;border:1px solid var(--border-default,#d8d8d2);background:var(--surface,#fff);color:inherit;font:inherit" />
+        </label>
+        <label style="display:flex;align-items:center;gap:6px">
+          默认缩放
+          <input id="scale" type="number" min="0.05" max="32" step="0.5" style="width:64px;padding:4px 6px;border-radius:6px;border:1px solid var(--border-default,#d8d8d2);background:var(--surface,#fff);color:inherit;font:inherit" />
+        </label>
+      </div>
+    </div>
+
+    <div style="display:flex;align-items:center;gap:10px">
+      <button id="save" style="padding:6px 14px;border-radius:6px;border:1px solid var(--border-default,#d8d8d2);background:var(--accent,#3b82f6);color:#fff;font:inherit;cursor:pointer">
+        保存
+      </button>
+      <span id="status" style="color:var(--text-secondary,#8a8a84)"></span>
+    </div>
+
+    <div style="color:var(--text-secondary,#8a8a84);font-size:12px">
+      这个插件只通过本机 aseprite.exe 命令行工作：会读取你指定的 .aseprite 文件，把导出的 PNG / JSON 写进上面说的目录，不会修改源文件，也不联网。
+    </div>
+  </div>
+  <script src="/settings.js"></script>
+</body>
